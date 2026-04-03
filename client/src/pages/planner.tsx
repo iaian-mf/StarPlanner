@@ -1,16 +1,49 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import dsoCatalog from "@/data/dso-catalog.json";
 import type { DSOObject, ScoredDSO } from "@/lib/types";
-import { astronomicalDarkness, KEW_GARDENS } from "@/lib/astronomy";
+import { astronomicalDarkness, sunAltitude, KEW_GARDENS, type Observer } from "@/lib/astronomy";
 import { scoreAllDSOs } from "@/lib/scoring";
 import { Header } from "@/components/header";
 import { DSOTable } from "@/components/dso-table";
 import { DetailPanel } from "@/components/detail-panel";
 import { Timeline } from "@/components/timeline";
+import { WeatherTimeline } from "@/components/weather-timeline";
 import { ChevronDown, ChevronUp } from "lucide-react";
+
+interface WeatherData {
+  times: string[];
+  cloudcover: number[];
+  precipitation: number[];
+}
 
 // Cast catalog data
 const catalog = dsoCatalog as DSOObject[];
+
+/** Find the sunset and sunrise bracketing the given night using 10-min sampling. */
+function findSunriseSunset(date: Date, observer: Observer): { sunset: Date; sunrise: Date } {
+  const base = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12, 0, 0));
+
+  let sunset = new Date(base.getTime() + 6 * 3600000);
+  let prev = sunAltitude(base, observer);
+  for (let m = 10; m <= 12 * 60; m += 10) {
+    const t = new Date(base.getTime() + m * 60000);
+    const alt = sunAltitude(t, observer);
+    if (prev >= 0 && alt < 0) { sunset = t; break; }
+    prev = alt;
+  }
+
+  const midnight = new Date(base.getTime() + 12 * 3600000);
+  let sunrise = new Date(midnight.getTime() + 6 * 3600000);
+  prev = sunAltitude(midnight, observer);
+  for (let m = 10; m <= 12 * 60; m += 10) {
+    const t = new Date(midnight.getTime() + m * 60000);
+    const alt = sunAltitude(t, observer);
+    if (prev < 0 && alt >= 0) { sunrise = t; break; }
+    prev = alt;
+  }
+
+  return { sunset, sunrise };
+}
 
 function getTonight(): Date {
   // We need UK local time to determine "tonight"
@@ -34,6 +67,9 @@ export default function PlannerPage() {
   const [selectedDSO, setSelectedDSO] = useState<ScoredDSO | null>(null);
   const [showTimeline, setShowTimeline] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
+  const lastDateRef = useRef<string>("");
 
   // Update current time every minute
   useEffect(() => {
@@ -41,10 +77,31 @@ export default function PlannerPage() {
     return () => clearInterval(interval);
   }, []);
 
+  // Fetch cloud cover from Open-Meteo, at most once every 30 minutes
+  useEffect(() => {
+    const fetchWeather = async () => {
+      try {
+        const res = await fetch(
+          "https://api.open-meteo.com/v1/forecast?latitude=51.48&longitude=-0.30&hourly=cloudcover,precipitation&timezone=UTC&forecast_days=3"
+        );
+        const json = await res.json();
+        setWeatherData({ times: json.hourly.time, cloudcover: json.hourly.cloudcover, precipitation: json.hourly.precipitation });
+      } catch {
+        // silently fail — weather is optional
+      }
+    };
+    fetchWeather();
+    const interval = setInterval(fetchWeather, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Calculate darkness window for selected date
   const darknessWindow = useMemo(() => {
     return astronomicalDarkness(selectedDate, KEW_GARDENS);
   }, [selectedDate]);
+
+  // Sunset/sunrise bracket for the timeline X axis
+  const sunriseSunset = useMemo(() => findSunriseSunset(selectedDate, KEW_GARDENS), [selectedDate]);
 
   // Score all objects
   const scoredObjects = useMemo(() => {
@@ -65,6 +122,20 @@ export default function PlannerPage() {
     return scoreAllDSOs(catalog, evalTime, darknessWindow.start, darknessWindow.end, KEW_GARDENS);
   }, [selectedDate, darknessWindow, currentTime]);
 
+  // Reset pinned objects to top 3 when the selected date changes
+  useEffect(() => {
+    const dateKey = selectedDate.toISOString().slice(0, 10);
+    if (dateKey !== lastDateRef.current && scoredObjects.length > 0) {
+      lastDateRef.current = dateKey;
+      setPinnedIds(new Set(scoredObjects.slice(0, 3).map(d => d.id)));
+    }
+  }, [selectedDate, scoredObjects]);
+
+  const pinnedObjects = useMemo(
+    () => scoredObjects.filter(d => pinnedIds.has(d.id)),
+    [scoredObjects, pinnedIds]
+  );
+
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date);
     setSelectedDSO(null);
@@ -72,6 +143,14 @@ export default function PlannerPage() {
 
   const handleSelectDSO = useCallback((dso: ScoredDSO) => {
     setSelectedDSO(prev => prev?.id === dso.id ? null : dso);
+  }, []);
+
+  const handleTogglePin = useCallback((id: string) => {
+    setPinnedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   }, []);
 
   return (
@@ -94,9 +173,26 @@ export default function PlannerPage() {
             {showTimeline ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
           {showTimeline && (
-            <div className="px-4 pb-2">
+            <div className="px-4 pb-2 space-y-1">
+              {weatherData && (
+                <>
+                  <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider pt-1">Cloud Cover</p>
+                  <WeatherTimeline
+                    times={weatherData.times}
+                    cloudcover={weatherData.cloudcover}
+                    precipitation={weatherData.precipitation}
+                    timelineStart={sunriseSunset.sunset}
+                    timelineEnd={sunriseSunset.sunrise}
+                    darknessStart={darknessWindow.start}
+                    darknessEnd={darknessWindow.end}
+                  />
+                  <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider pt-1">Object Visibility</p>
+                </>
+              )}
               <Timeline
-                objects={scoredObjects}
+                objects={pinnedObjects}
+                timelineStart={sunriseSunset.sunset}
+                timelineEnd={sunriseSunset.sunrise}
                 darknessStart={darknessWindow.start}
                 darknessEnd={darknessWindow.end}
               />
@@ -113,6 +209,8 @@ export default function PlannerPage() {
             objects={scoredObjects}
             selectedId={selectedDSO?.id ?? null}
             onSelect={handleSelectDSO}
+            pinnedIds={pinnedIds}
+            onTogglePin={handleTogglePin}
           />
         </div>
 

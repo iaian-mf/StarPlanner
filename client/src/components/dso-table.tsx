@@ -12,6 +12,8 @@ interface DSOTableProps {
   objects: ScoredDSO[];
   selectedId: string | null;
   onSelect: (dso: ScoredDSO) => void;
+  pinnedIds: Set<string>;
+  onTogglePin: (id: string) => void;
 }
 
 const DSO_TYPES = [
@@ -26,7 +28,18 @@ const DSO_TYPES = [
   "Stellar Association",
 ];
 
-export function DSOTable({ objects, selectedId, onSelect }: DSOTableProps) {
+// Rise azimuth via spherical trig: cos(A) = sin(δ) / cos(φ)
+const KEW_LAT_RAD = 51.48 * Math.PI / 180;
+function getRiseDirection(decDeg: number): string {
+  const cosA = Math.sin(decDeg * Math.PI / 180) / Math.cos(KEW_LAT_RAD);
+  if (cosA >= 1) return "N"; // circumpolar — always above horizon
+  if (cosA <= -1) return "—"; // never rises above this latitude
+  const azDeg = Math.acos(cosA) * 180 / Math.PI;
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  return dirs[Math.round(azDeg / 22.5) % 16];
+}
+
+export function DSOTable({ objects, selectedId, onSelect, pinnedIds, onTogglePin }: DSOTableProps) {
   const [sortField, setSortField] = useState<SortField>("recommendationScore");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [filters, setFilters] = useState<Filters>({
@@ -250,6 +263,7 @@ export function DSOTable({ objects, selectedId, onSelect }: DSOTableProps) {
         <table className="w-full text-xs">
           <thead className="sticky top-0 z-10 bg-card">
             <tr className="border-b border-border">
+              <th className="px-2 py-1.5 w-7" title="Pin to timeline" />
               <Th field="recommendationScore" label="Score" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="center" />
               <Th field="displayId" label="Object" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <Th field="commonName" label="Name" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -259,8 +273,7 @@ export function DSOTable({ objects, selectedId, onSelect }: DSOTableProps) {
               <Th field="currentAltitude" label="Alt" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
               <Th field="transitTime" label="Transit" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
               <Th field="transitAltitude" label="Max Alt" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th field="hoursAbove30" label="Hrs >30°" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th field="constellation" label="Const" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="center" />
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider font-medium text-muted-foreground text-center">Rises</th>
             </tr>
           </thead>
           <tbody>
@@ -275,6 +288,19 @@ export function DSOTable({ objects, selectedId, onSelect }: DSOTableProps) {
                     : "hover:bg-muted/40"
                 }`}
               >
+                {/* Pin toggle */}
+                <td className="px-2 py-1.5 w-7">
+                  <button
+                    onClick={e => { e.stopPropagation(); onTogglePin(dso.id); }}
+                    title={pinnedIds.has(dso.id) ? "Remove from timeline" : "Add to timeline"}
+                    className="w-3.5 h-3.5 rounded-full border transition-colors flex-shrink-0"
+                    style={{
+                      background: pinnedIds.has(dso.id) ? "#f59e0b" : "transparent",
+                      borderColor: pinnedIds.has(dso.id) ? "#f59e0b" : "rgba(255,255,255,0.2)",
+                    }}
+                  />
+                </td>
+
                 {/* Score */}
                 <td className="px-2 py-1.5 text-center">
                   <span className={`font-mono font-bold text-sm ${getScoreColor(dso.recommendationScore)}`}>
@@ -328,16 +354,9 @@ export function DSOTable({ objects, selectedId, onSelect }: DSOTableProps) {
                   {dso.transitAltitude.toFixed(1)}°
                 </td>
 
-                {/* Hours above 30 */}
-                <td className="px-2 py-1.5 text-right">
-                  <span className={`font-mono ${dso.hoursAbove30 >= 2 ? "text-emerald-400" : dso.hoursAbove30 > 0 ? "text-amber-400" : "text-muted-foreground"}`}>
-                    {dso.hoursAbove30.toFixed(1)}h
-                  </span>
-                </td>
-
-                {/* Constellation */}
-                <td className="px-2 py-1.5 text-center text-muted-foreground">
-                  {dso.constellation}
+                {/* Rise compass direction */}
+                <td className="px-2 py-1.5 text-center font-mono text-muted-foreground">
+                  {getRiseDirection(dso.dec)}
                 </td>
               </tr>
             ))}

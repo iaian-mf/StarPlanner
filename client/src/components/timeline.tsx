@@ -2,32 +2,22 @@ import { useRef, useEffect } from "react";
 import { altitudeProfile, KEW_GARDENS, formatTime, type Observer } from "@/lib/astronomy";
 import type { ScoredDSO } from "@/lib/types";
 
-// Consistent color palette for timeline bars
-const BAR_COLORS = [
-  "#06b6d4", // cyan
-  "#8b5cf6", // violet
-  "#10b981", // emerald
-  "#f59e0b", // amber
-  "#f43f5e", // rose
-  "#3b82f6", // blue
-  "#ec4899", // pink
-  "#14b8a6", // teal
-];
-
 interface TimelineProps {
   objects: ScoredDSO[];
+  timelineStart: Date;
+  timelineEnd: Date;
   darknessStart: Date;
   darknessEnd: Date;
   observer?: Observer;
-  maxObjects?: number;
 }
 
 export function Timeline({
   objects,
+  timelineStart,
+  timelineEnd,
   darknessStart,
   darknessEnd,
   observer = KEW_GARDENS,
-  maxObjects = 8,
 }: TimelineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -51,9 +41,8 @@ export function Timeline({
 
     ctx.clearRect(0, 0, w, h);
 
-    // Time range from darkness start -30min to darkness end +30min
-    const startTime = new Date(darknessStart.getTime() - 30 * 60000);
-    const endTime = new Date(darknessEnd.getTime() + 30 * 60000);
+    const startTime = timelineStart;
+    const endTime = timelineEnd;
 
     const timeToX = (t: Date) => {
       const frac = (t.getTime() - startTime.getTime()) / (endTime.getTime() - startTime.getTime());
@@ -77,15 +66,23 @@ export function Timeline({
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const topObjects = objects.slice(0, maxObjects);
-    const barHeight = Math.min(16, (plotH - (topObjects.length - 1) * 3) / topObjects.length);
+    if (objects.length === 0) return;
+
+    const barHeight = Math.min(16, (plotH - (objects.length - 1) * 3) / objects.length);
     const gap = 3;
 
-    topObjects.forEach((dso, idx) => {
-      const y = padding.top + idx * (barHeight + gap);
-      const color = BAR_COLORS[idx % BAR_COLORS.length];
+    type Band = "below" | "low" | "high";
+    const getBand = (alt: number): Band => alt < 0 ? "below" : alt < 30 ? "low" : "high";
 
-      // Calculate visibility windows above 30°
+    // amber for 0–30°, green for 30–90°
+    const bandFill: Record<Band, string | null> = {
+      below: null,
+      low: "#f59e0b",   // amber-400
+      high: "#10b981",  // emerald-500
+    };
+
+    objects.forEach((dso, idx) => {
+      const y = padding.top + idx * (barHeight + gap);
       const profile = altitudeProfile(startTime, endTime, dso.ra, dso.dec, observer, 5);
 
       // Label
@@ -95,47 +92,53 @@ export function Timeline({
       const label = dso.commonName?.split(",")[0] || dso.displayId;
       ctx.fillText(label.length > 14 ? label.slice(0, 13) + "…" : label, padding.left - 6, y + barHeight / 2 + 3.5);
 
-      // Draw visibility bar
-      let inWindow = false;
-      let windowStart = 0;
-
-      for (let i = 0; i < profile.length; i++) {
-        const above = profile[i].altitude >= 30;
-        const x = timeToX(profile[i].time);
-
-        if (above && !inWindow) {
-          windowStart = x;
-          inWindow = true;
-        } else if (!above && inWindow) {
-          // Draw bar
-          ctx.fillStyle = color + "44";
-          ctx.beginPath();
-          ctx.roundRect(windowStart, y, x - windowStart, barHeight, 3);
-          ctx.fill();
-
-          ctx.strokeStyle = color + "88";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.roundRect(windowStart, y, x - windowStart, barHeight, 3);
-          ctx.stroke();
-
-          inWindow = false;
-        }
-      }
-
-      // Close any remaining window
-      if (inWindow) {
-        const x = timeToX(profile[profile.length - 1].time);
-        ctx.fillStyle = color + "44";
+      // Draw segments coloured by altitude band
+      const drawSeg = (band: Band, x1: number, x2: number) => {
+        const c = bandFill[band];
+        if (!c || x2 <= x1) return;
+        ctx.fillStyle = c + "44";
         ctx.beginPath();
-        ctx.roundRect(windowStart, y, x - windowStart, barHeight, 3);
+        ctx.roundRect(x1, y, x2 - x1, barHeight, 3);
         ctx.fill();
-
-        ctx.strokeStyle = color + "88";
+        ctx.strokeStyle = c + "99";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.roundRect(windowStart, y, x - windowStart, barHeight, 3);
+        ctx.roundRect(x1, y, x2 - x1, barHeight, 3);
         ctx.stroke();
+      };
+
+      let segBand = getBand(profile[0].altitude);
+      let segStart = timeToX(profile[0].time);
+
+      for (let i = 1; i < profile.length; i++) {
+        const band = getBand(profile[i].altitude);
+        const x = timeToX(profile[i].time);
+        if (band !== segBand) {
+          drawSeg(segBand, segStart, x);
+          segStart = x;
+          segBand = band;
+        }
+      }
+      drawSeg(segBand, segStart, timeToX(profile[profile.length - 1].time));
+
+      // Transit time marker — white vertical tick within the bar
+      const tx = timeToX(dso.transitTime);
+      if (tx >= padding.left && tx <= padding.left + plotW) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(tx, y + 1);
+        ctx.lineTo(tx, y + barHeight - 1);
+        ctx.stroke();
+
+        // Small downward triangle below the bar
+        ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.beginPath();
+        ctx.moveTo(tx - 3, y + barHeight + 1);
+        ctx.lineTo(tx + 3, y + barHeight + 1);
+        ctx.lineTo(tx, y + barHeight + 4);
+        ctx.closePath();
+        ctx.fill();
       }
     });
 
@@ -151,8 +154,6 @@ export function Timeline({
       const t = new Date(startTime.getTime() + i * 3600000);
       const x = timeToX(t);
       ctx.fillText(formatTime(t), x, padding.top + plotH + 14);
-
-      // Tick
       ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
       ctx.lineWidth = 0.5;
       ctx.beginPath();
@@ -161,7 +162,7 @@ export function Timeline({
       ctx.stroke();
     }
 
-  }, [objects, darknessStart, darknessEnd, observer, maxObjects]);
+  }, [objects, timelineStart, timelineEnd, darknessStart, darknessEnd, observer]);
 
   return (
     <div className="w-full" data-testid="timeline-chart">

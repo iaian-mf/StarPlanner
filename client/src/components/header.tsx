@@ -70,7 +70,7 @@ export function Header({ selectedDate, onDateChange, darknessWindow }: HeaderPro
           )}
         </div>
 
-        {/* Right: Location + LST */}
+        {/* Right: Location + LST + version */}
         <div className="flex items-center gap-4 shrink-0">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <MapPin className="w-3.5 h-3.5" />
@@ -82,6 +82,12 @@ export function Header({ selectedDate, onDateChange, darknessWindow }: HeaderPro
             <span className="text-muted-foreground">LST</span>
             <span className="font-mono text-primary">{formatLST(currentLST)}</span>
           </div>
+          <span
+            className="font-mono text-[10px] text-muted-foreground/50"
+            title={`Built ${new Date(__BUILD_DATE__).toLocaleString()}`}
+          >
+            v{new Date(__BUILD_DATE__).toISOString().slice(0, 10)}
+          </span>
         </div>
       </div>
     </header>
